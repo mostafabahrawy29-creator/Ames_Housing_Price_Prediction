@@ -18,7 +18,9 @@ PROJECT_DIR = os.path.dirname(SRC_DIR)
 if SRC_DIR not in sys.path:
     sys.path.insert(0, SRC_DIR)
 
+from sklearn.base import clone
 from sklearn.model_selection import train_test_split, KFold
+from sklearn.feature_selection import VarianceThreshold
 from sklearn.metrics import mean_squared_error
 from sklearn.inspection import permutation_importance
 from sklearn.linear_model import Ridge
@@ -49,7 +51,7 @@ optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 SEED = 42
 np.random.seed(SEED)
-N_TRIALS = 15
+N_TRIALS = 20
 N_CV_FOLDS = 5
 
 DATA_PATH = os.path.join(PROJECT_DIR, "data", "train.csv")
@@ -98,16 +100,29 @@ mi_df = calculate_mutual_information(X_tr_p, y_tr, feat_names, random_state=SEED
 mi_df.to_csv(os.path.join(OUT_TABLES, "feature_selection_summary.csv"), index=False)
 print(f"  Top feature: {mi_df.iloc[0]['Feature']} (MI={mi_df.iloc[0]['MI_Score']:.4f})")
 
-# 6. Optuna Bayesian Tuning
+# 6. Optuna Bayesian Tuning (with fold-isolated preprocessing)
 print(f"\nStep 6: Running Optuna optimization ({N_TRIALS} trials, {N_CV_FOLDS}-fold CV)...")
 kf = KFold(n_splits=N_CV_FOLDS, shuffle=True, random_state=SEED)
 
 
 def cv_rmse(model, X, y):
     scores = []
+    y = np.asarray(y)
     for ti, vi in kf.split(X):
-        model.fit(X[ti], y[ti])
-        scores.append(float(np.sqrt(mean_squared_error(y[vi], model.predict(X[vi])))))
+        X_f_tr, X_f_va = X.iloc[ti], X.iloc[vi]
+        y_f_tr, y_f_va = y[ti], y[vi]
+
+        fold_prep = clone(preprocessor)
+        X_f_tr_p = fold_prep.fit_transform(X_f_tr)
+        X_f_va_p = fold_prep.transform(X_f_va)
+
+        fold_sel = VarianceThreshold(threshold=0.005)
+        X_f_tr_s = fold_sel.fit_transform(X_f_tr_p)
+        X_f_va_s = fold_sel.transform(X_f_va_p)
+
+        fold_mdl = clone(model)
+        fold_mdl.fit(X_f_tr_s, y_f_tr)
+        scores.append(float(np.sqrt(mean_squared_error(y_f_va, fold_mdl.predict(X_f_va_s)))))
     return float(np.mean(scores))
 
 
@@ -116,7 +131,7 @@ studies = {}
 
 def tune(name, make_model_fn):
     def obj(trial):
-        return cv_rmse(make_model_fn(trial), X_tr_p, y_tr)
+        return cv_rmse(make_model_fn(trial), X_tr, y_tr)
 
     st = optuna.create_study(direction="minimize")
     st.optimize(obj, n_trials=N_TRIALS)

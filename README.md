@@ -14,12 +14,14 @@ Ames_Housing_Price_Prediction/
 ├── notebooks/
 │   └── Ames_Housing_End_to_End_ML.ipynb   # Main interactive notebook
 ├── src/
+│   ├── __init__.py
 │   ├── data_loader.py                     # Dataset loading & structural-NA handling
 │   ├── feature_engineering.py             # Domain composite features
 │   ├── preprocessing.py                   # Scikit-Learn ColumnTransformer pipelines
 │   ├── feature_selection.py               # Mutual Information & Variance Threshold
 │   ├── evaluation.py                      # Metric computation & benchmark table
 │   ├── visualizations.py                  # Plotly interactive chart generators
+│   ├── notebook_builder.py                # Automated Jupyter Notebook generator
 │   └── run_pipeline.py                    # Full end-to-end execution script
 ├── outputs/
 │   ├── figures/                           # Interactive Plotly HTML charts
@@ -64,25 +66,25 @@ Raw CSV → Structural-NA Fix → Outlier Removal → Feature Engineering
 
 | Model | Tuner | Notes |
 |---|---|---|
-| **Ridge Regression** | **Optuna** | **L2-regularized linear model, lowest Test Log-RMSE — Winner** |
-| SVR (RBF) | Optuna | Robust epsilon-insensitive loss, lowest Dollar RMSE |
-| CatBoost | Optuna | Ordered boosting with symmetric trees |
-| LightGBM | Optuna | Leaf-wise gradient boosting, fast training |
+| **Ridge Regression** | **Optuna** | **L2-regularized linear model, lowest Test Log-RMSE & Dollar RMSE — Winner** |
+| CatBoost | Optuna | Ordered boosting with symmetric trees, top tree-based model |
 | XGBoost | Optuna | Second-order regularized gradient boosting |
+| SVR (RBF) | Optuna | Robust epsilon-insensitive loss, lowest Test Dollar MAE |
+| LightGBM | Optuna | Leaf-wise gradient boosting, fast training |
 | KNN Regressor | Optuna | Distance-weighted nearest neighbors baseline |
 
 ---
 
 ## Key Results
 
-| Model | Test R² | Test RMSE (Log) | Test RMSE ($) | Test MAE ($) |
-|---|---|---|---|---|
-| **Ridge Regression** | **0.9241** | **0.1136** | **$18,627.60** | — |
-| SVR | — | — | $18,616.18 | $12,605.34 |
-| CatBoost | — | — | $18,885.55 | — |
-| LightGBM | — | — | — | — |
-| XGBoost | — | — | — | — |
-| KNN | — | — | — | — |
+| Model | Train R² | Val R² | Test R² | Test RMSE (Log) | Test MAE ($) | Test RMSE ($) | Overfit Gap (R²) |
+|---|---|---|---|---|---|---|---|
+| **Ridge Regression** | **0.9375** | 0.9147 | **0.9239** | **0.1138** | $13,076.52 | **$18,653.21** | **0.0228** |
+| CatBoost | 0.9937 | 0.9076 | 0.9124 | 0.1221 | $13,735.65 | $19,112.83 | 0.0861 |
+| XGBoost | 0.9794 | 0.9005 | 0.9098 | 0.1239 | $13,726.27 | $19,808.74 | 0.0789 |
+| SVR | 0.9632 | **0.9168** | 0.9079 | 0.1252 | **$12,641.71** | $18,715.69 | 0.0464 |
+| LightGBM | 0.9848 | 0.8893 | 0.8971 | 0.1323 | $14,512.48 | $22,079.21 | 0.0955 |
+| KNN Regressor | 1.0000 | 0.8400 | 0.8156 | 0.1771 | $20,873.41 | $30,109.97 | 0.1600 |
 
 > Metrics are evaluated on the **log-transformed target** (equivalent to RMSLE). Dollar values are back-transformed via `expm1`.
 
@@ -90,9 +92,9 @@ Raw CSV → Structural-NA Fix → Outlier Removal → Feature Engineering
 
 ## Why Ridge Regression Won
 
-1. **Primary Metric Superiority**: Achieved the lowest Test Log-RMSE (`0.1136`) and highest R² (`0.9241`), directly minimizing relative error across mid-range and high-value homes.
-2. **Linearity After Transformation**: Log-transforming skewed numeric features and `SalePrice`, combined with domain-engineered interaction terms, linearized feature-target relationships so L2 regularization captures true signal without memorizing noise.
-3. **Minimal Overfitting Gap**: Maintained tight generalization between validation and test splits, avoiding the wider train-to-test variance (`0.0609–0.0978` Log-RMSE gap) observed in deeper tree ensembles.
+1. **Primary Metric Superiority**: Achieved the lowest Test Log-RMSE (`0.1138`), lowest Dollar RMSE (`$18,653.21`), and highest Test R² (`0.9239`), directly minimizing relative error across mid-range and high-value homes.
+2. **Linearity After Transformation**: Log-transforming skewed numeric features and `SalePrice`, combined with domain-engineered interaction terms (`QualArea`, `TotalSF`, `OverallGrade`, `TotalBath`), linearized feature-target relationships so L2 regularization captures true signal without memorizing noise.
+3. **Minimal Overfitting Gap**: Maintained the tightest generalization gap (`0.0228` R² gap / `0.0149` Log-RMSE gap), avoiding the wider variance (`0.0789–0.0955` R² overfit gap) observed in deeper tree ensembles.
 4. **Interpretability & Low Latency**: Exposes transparent feature weights for stakeholder explainability and provides near-instantaneous inference speed compared to kernel or boosted models.
 
 ---
@@ -111,7 +113,7 @@ The dataset (`data/train.csv`) is derived from the publicly available **Ames Hou
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/mostafabahrawy29-creator/Ames_Housing_Price_Prediction.git
+git clone [https://github.com/mostafabahrawy29-creator/Ames_Housing_Price_Prediction.git](https://github.com/mostafabahrawy29-creator/Ames_Housing_Price_Prediction.git)
 cd Ames_Housing_Price_Prediction
 
 # 2. Create and activate virtual environment

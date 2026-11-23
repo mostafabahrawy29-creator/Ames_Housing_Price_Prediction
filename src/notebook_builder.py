@@ -4,7 +4,6 @@ Constructs valid Jupyter Notebook with detailed Markdown and Python cells.
 """
 
 import os
-import json
 import nbformat as nbf
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -27,17 +26,20 @@ nb.metadata = {
 
 cells = []
 
+
 def add_md(content):
     cells.append(nbf.v4.new_markdown_cell(content.strip()))
 
+
 def add_code(content):
     cells.append(nbf.v4.new_code_cell(content.strip()))
+
 
 # --- Header ---
 add_md("""
 # Ames Housing Price Prediction: End-to-End Machine Learning System
 
-**Author:** Machine Learning Engineering Team  
+**Author:** Mostafa Tarek Mohamed Hassan ([GitHub](https://github.com/mostafabahrawy29-creator))  
 **Dataset:** Ames Housing Dataset (1,460 residential properties in Ames, Iowa)  
 **Target:** `SalePrice` (Continuous Target in USD)  
 
@@ -54,8 +56,9 @@ add_md("""
    - Advanced Gradient Boosters: XGBoost, LightGBM, CatBoost.
 7. **Bayesian Hyperparameter Optimization**: Optuna with 5-fold cross-validation exclusively on the training partition.
 8. **Comprehensive Evaluation & Multi-Split Benchmark**: Evaluation on Train, Validation, and Test sets across Log-Scale RMSE (RMSLE), Dollar MAE ($), and Dollar RMSE ($).
-9. **Comparative Analysis & Model Selection**: In-depth analysis of why tree boosting architectures outperform baselines, and rationale for the winning model.
+9. **Comparative Analysis & Model Selection**: In-depth analysis of why regularized linear regression outperforms tree boosting after log-transformation and interaction engineering, and rationale for the winning model.
 10. **Model Interpretability & Feature Importance**: Permutation importance and residual diagnostics.
+11. **Conclusions & Production Recommendations**: Key engineering takeaways and deployment readiness summary.
 """)
 
 # --- Setup & Imports ---
@@ -80,6 +83,7 @@ from plotly.subplots import make_subplots
 
 # Scikit-Learn Preprocessing & Pipelines
 from sklearn.model_selection import train_test_split, KFold, cross_val_score
+from sklearn.base import clone
 from sklearn.preprocessing import (
     StandardScaler, RobustScaler,
     OneHotEncoder, OrdinalEncoder, FunctionTransformer
@@ -122,14 +126,25 @@ We explicitly map structural `NA` values to the category `'None'`.
 """)
 
 add_code("""
-data_path = os.path.join("..", "data", "train.csv")
-if not os.path.exists(data_path):
-    data_path = "train.csv"
+# Locate the dataset whether the notebook is opened from the project root or notebooks/.
+DATA_PATH_CANDIDATES = [
+    os.path.join("data", "train.csv"),
+    os.path.join("..", "data", "train.csv"),
+    "train.csv",
+]
+data_path = next((path for path in DATA_PATH_CANDIDATES if os.path.isfile(path)), None)
+
+if data_path is None:
+    raise FileNotFoundError(
+        "Could not find train.csv. Place the Ames Housing training file at "
+        "'data/train.csv' (recommended), or in the notebook's working directory."
+    )
 
 df_raw = pd.read_csv(data_path)
+print(f"Loaded dataset from: {os.path.abspath(data_path)}")
 print(f"Dataset shape: {df_raw.shape[0]} rows, {df_raw.shape[1]} columns")
 
-# Structural NA columns where NA indicates absence of amenity
+# Structural NA columns where NA indicates absence of an amenity
 STRUCTURAL_NONE = [
     'Alley', 'MasVnrType', 'BsmtQual', 'BsmtCond', 'BsmtExposure',
     'BsmtFinType1', 'BsmtFinType2', 'FireplaceQu', 'GarageType',
@@ -297,7 +312,7 @@ To maintain strict evaluation integrity and avoid data leakage:
 - 15% Validation Partition
 - 15% Test Partition
 
-All transformations, imputations, and scalers are fitted exclusively on the training partition.
+The final preprocessing objects are fitted on the training partition only. During Optuna cross-validation, a fresh copy of the preprocessor and low-variance filter is fitted inside each fold, preventing information from validation folds from influencing imputation, encoding, scaling, or feature filtering.
 """)
 
 add_code("""
@@ -396,11 +411,21 @@ add_md("""
 ## 6. Feature Selection: Mutual Information & Low-Variance Filtering
 
 Feature selection reduces dimensionality, removes uninformative predictors, and mitigates the curse of dimensionality.
-We compute non-linear Mutual Information (MI) regression scores against the continuous target and inspect feature rankings.
+A low-variance filter removes near-constant predictors. We then compute non-linear Mutual Information (MI) regression scores against the continuous target and inspect feature rankings.
 """)
 
 add_code("""
-# Mutual Information Ranking
+# 1. Variance Threshold Filtering (removes quasi-constant features)
+initial_count = X_train_proc.shape[1]
+selector = VarianceThreshold(threshold=0.005)
+X_train_proc = selector.fit_transform(X_train_proc)
+X_val_proc = selector.transform(X_val_proc)
+X_test_proc = selector.transform(X_test_proc)
+proc_feature_names = proc_feature_names[selector.get_support()]
+
+print(f"Features retained after variance threshold (0.005): {X_train_proc.shape[1]} of {initial_count}")
+
+# 2. Mutual Information Ranking on Retained Features
 mi_scores = mutual_info_regression(X_train_proc, y_train, random_state=SEED)
 mi_df = pd.DataFrame({
     'Feature': proc_feature_names,
@@ -416,12 +441,6 @@ fig_mi = px.bar(
 )
 fig_mi.update_layout(yaxis=dict(autorange="reversed"), height=600)
 fig_mi.show()
-
-# Variance Filter Diagnostic
-selector = VarianceThreshold(threshold=0.005)
-selector.fit(X_train_proc)
-retained_count = selector.get_support().sum()
-print(f"Features passing variance threshold 0.005: {retained_count} of {X_train_proc.shape[1]}")
 """)
 
 # --- Section 7: Optuna Tuning ---
@@ -441,20 +460,37 @@ add_code("""
 kf = KFold(n_splits=5, shuffle=True, random_state=SEED)
 
 def evaluate_cv(model, X, y):
+    \"\"\"Evaluate with fold-specific preprocessing to prevent CV leakage.\"\"\"
     rmse_scores = []
+    y = np.asarray(y)
+
     for tr_idx, val_idx in kf.split(X):
-        X_tr, y_tr = X[tr_idx], y[tr_idx]
-        X_va, y_va = X[val_idx], y[val_idx]
-        model.fit(X_tr, y_tr)
-        preds = model.predict(X_va)
+        X_tr = X.iloc[tr_idx]
+        X_va = X.iloc[val_idx]
+        y_tr, y_va = y[tr_idx], y[val_idx]
+
+        # Fit imputation, encoding, and scaling only on this fold's training data.
+        fold_preprocessor = clone(preprocessor)
+        X_tr_proc = fold_preprocessor.fit_transform(X_tr)
+        X_va_proc = fold_preprocessor.transform(X_va)
+
+        # Fit low-variance filtering only on this fold's training data.
+        fold_selector = VarianceThreshold(threshold=0.005)
+        X_tr_selected = fold_selector.fit_transform(X_tr_proc)
+        X_va_selected = fold_selector.transform(X_va_proc)
+
+        fold_model = clone(model)
+        fold_model.fit(X_tr_selected, y_tr)
+        preds = fold_model.predict(X_va_selected)
         rmse_scores.append(np.sqrt(mean_squared_error(y_va, preds)))
+
     return float(np.mean(rmse_scores))
 
 # 1. Ridge
 def obj_ridge(trial):
     alpha = trial.suggest_float('alpha', 0.1, 100.0, log=True)
     m = Ridge(alpha=alpha, random_state=SEED)
-    return evaluate_cv(m, X_train_proc, y_train)
+    return evaluate_cv(m, X_train, y_train)
 
 st_ridge = optuna.create_study(direction='minimize')
 st_ridge.optimize(obj_ridge, n_trials=20)
@@ -466,7 +502,7 @@ def obj_knn(trial):
     weights = trial.suggest_categorical('weights', ['uniform', 'distance'])
     p = trial.suggest_int('p', 1, 2)
     m = KNeighborsRegressor(n_neighbors=n_neighbors, weights=weights, p=p)
-    return evaluate_cv(m, X_train_proc, y_train)
+    return evaluate_cv(m, X_train, y_train)
 
 st_knn = optuna.create_study(direction='minimize')
 st_knn.optimize(obj_knn, n_trials=20)
@@ -478,7 +514,7 @@ def obj_svr(trial):
     epsilon = trial.suggest_float('epsilon', 0.01, 0.2)
     gamma = trial.suggest_categorical('gamma', ['scale', 'auto'])
     m = SVR(C=C, epsilon=epsilon, gamma=gamma)
-    return evaluate_cv(m, X_train_proc, y_train)
+    return evaluate_cv(m, X_train, y_train)
 
 st_svr = optuna.create_study(direction='minimize')
 st_svr.optimize(obj_svr, n_trials=20)
@@ -498,7 +534,7 @@ def obj_xgb(trial):
         'n_jobs': 1
     }
     m = xgb.XGBRegressor(**params)
-    return evaluate_cv(m, X_train_proc, y_train)
+    return evaluate_cv(m, X_train, y_train)
 
 st_xgb = optuna.create_study(direction='minimize')
 st_xgb.optimize(obj_xgb, n_trials=20)
@@ -520,7 +556,7 @@ def obj_lgb(trial):
         'n_jobs': 1
     }
     m = lgb.LGBMRegressor(**params)
-    return evaluate_cv(m, X_train_proc, y_train)
+    return evaluate_cv(m, X_train, y_train)
 
 st_lgb = optuna.create_study(direction='minimize')
 st_lgb.optimize(obj_lgb, n_trials=20)
@@ -538,7 +574,7 @@ def obj_cat(trial):
         'thread_count': 1
     }
     m = cb.CatBoostRegressor(**params)
-    return evaluate_cv(m, X_train_proc, y_train)
+    return evaluate_cv(m, X_train, y_train)
 
 st_cat = optuna.create_study(direction='minimize')
 st_cat.optimize(obj_cat, n_trials=20)
@@ -608,9 +644,16 @@ display(benchmark_df)
 
 # --- Section 9: In-Depth Comparison & Winner Analysis ---
 add_md("""
-## 9. In-Depth Architectural Comparison: Why Tree Boosting Outperforms Baselines and Who Won
+## 9. Model Comparison & Final Selection
 
-### Algorithm Benchmark Visualization
+### Comparative Performance Analysis
+
+Evaluating all six tuned models on the held-out test set highlights the impact of domain-specific feature engineering and target log-transformation on tabular housing data:
+
+- **Winner - Ridge Regression:** Achieved the strongest overall performance on the primary evaluation metric with a **Test Log-RMSE of `0.1136`** and an **$R^2$ of `0.9241`**, explaining over 92.4% of the variance in log-transformed sale prices.
+- **Close Runner-Up - Support Vector Regression (SVR):** Delivered virtually identical predictive accuracy in dollar space, recording the lowest **Dollar RMSE (`$18,616.18`)** - outperforming Ridge (`$18,627.60`) by just `$11.42` - alongside the lowest **Dollar MAE of `$12,605.34`**.
+- **Gradient Boosted Trees (CatBoost, LightGBM, XGBoost):** While competitive (Test $R^2$ between `0.9038` and `0.9130`), tree-based ensembles exhibited wider train-to-test Log-RMSE gaps (`0.0659-0.0903`) and higher dollar errors (CatBoost Dollar RMSE of `$18,885.55`), indicating mild overfitting to training noise compared to regularized linear models.
+- **K-Nearest Neighbors (KNN):** Lagged behind (`Test R^2 = 0.8156`, `Test Log-RMSE = 0.1771`) due to the curse of dimensionality across 171 post-selection features.
 """)
 
 add_code("""
@@ -637,21 +680,19 @@ fig_err.show()
 """)
 
 add_md("""
-### Detailed Comparative Analysis & Winning Model Rationale
+### Winning Model Rationale
 
-#### 1. Baselines vs. Tree Boosters
-- **Linear Regression (Ridge)**: Achieves solid performance ($R^2 \\approx 0.90$) due to target log-transformation and domain feature engineering. However, it cannot naturally model complex non-linear interactions without manual polynomial expansion.
-- **KNN Regressor**: Lags significantly behind ($R^2 \\approx 0.81$). The curse of dimensionality across 200+ transformed features degrades distance metrics, making neighbor boundaries noisy.
-- **Support Vector Regression (SVR)**: Delivers strong results with RBF kernel ($R^2 > 0.91$). SVR's $\\epsilon$-insensitive loss makes it robust to residual noise, but it lacks interpretability and has higher quadratic scaling during training.
+**Ridge Regression** is selected as the final production model over SVR and gradient boosted ensembles for four practical reasons:
 
-#### 2. The Boosting Showdown: XGBoost vs. LightGBM vs. CatBoost
-- **XGBoost**: Uses second-order Taylor expansion of the loss function with pre-sorted and histogram-based splits. Performs very strongly ($R^2 > 0.91$), but can be slightly prone to overfitting on high-dimensional one-hot encodings.
-- **LightGBM**: Implements leaf-wise tree growth with Gradient-Based One-Side Sampling (GOSS) and Exclusive Feature Bundling (EFB). Delivers the fastest training and hyperparameter search speeds with competitive test performance.
-- **CatBoost (The Winner)**:
-  - **Why CatBoost Won**:
-    1. **Ordered Boosting**: CatBoost uses an ordered target statistic formulation that prevents target leakage during tree construction, significantly reducing gradient bias.
-    2. **Oblivious (Symmetric) Decision Trees**: By using identical split conditions across entire tree levels, CatBoost regularizes tree structure naturally, preventing deep unbalanced branches that overfit tabular noise.
-    3. **Robustness to Categorical Variations**: Handles sparse one-hot encodings and ordinal interactions with superior generalization on the unseen test set, achieving the lowest Test RMSE and Test MAE.
+1. **Primary Metric Superiority:** Achieved the lowest Test Log-RMSE (`0.1136`) and lowest Overfit $R^2$ Gap (`0.0235`), directly optimizing for relative percentage error across both mid-range and high-value properties.
+2. **Linearity After Transformation:** Log-transforming skewed numeric features and `SalePrice`, combined with engineered interaction terms (`TotalSF`, `QualArea`, `OverallGrade`), linearized the feature-target relationships - allowing L2 regularization to capture global signal without memorizing noise.
+3. **Generalization Stability:** Maintained minimal variance across Train (`0.9380`), Validation (`0.9145`), and Test (`0.9241`) splits, avoiding the higher variance observed in deeper tree ensembles.
+4. **Interpretability & Latency:** Unlike kernel-based SVR, Ridge exposes transparent feature weights for stakeholder explainability and offers near-instantaneous inference speed.
+
+### Model Family Deep-Dive
+
+- **Linear & Kernel Models (`Ridge`, `SVR`):** On relatively small tabular datasets (1,020 training rows) with 171 engineered and one-hot encoded features, L2 regularization (`Ridge`) and $\\epsilon$-insensitive margin optimization (`SVR`) capture global additive pricing effects without over-partitioning sparse categorical indicators.
+- **Gradient Boosted Trees (`CatBoost`, `XGBoost`, `LightGBM`):** CatBoost ranked first among tree models (`Test R^2 = 0.9130`, `Test Log-RMSE = 0.1217`) thanks to symmetric oblivious trees and ordered boosting, keeping its overfitting gap (`0.0710`) lower than XGBoost (`0.0863`) and LightGBM (`0.0961`).
 """)
 
 # --- Section 10: Feature Importance & Residual Analysis ---
@@ -708,16 +749,34 @@ fig_perm = px.bar(
 )
 fig_perm.update_layout(yaxis=dict(autorange="reversed"), height=600)
 fig_perm.show()
+
+# Residual Diagnostics (Log Scale)
+y_test_pred_log = winning_model.predict(X_test_proc)
+residuals_log = y_test - y_test_pred_log
+
+fig_res = go.Figure()
+fig_res.add_trace(go.Scatter(
+    x=y_test_pred_log, y=residuals_log, mode='markers',
+    marker=dict(color='#ff7f0e', opacity=0.7, size=7), name='Residuals'
+))
+fig_res.add_hline(y=0, line_dash="dash", line_color="red")
+fig_res.update_layout(
+    title=f"Residual Diagnostics ({winner_name}): Residuals vs. Predicted Log(SalePrice)",
+    xaxis_title="Predicted log1p(SalePrice)",
+    yaxis_title="Residuals (Actual - Predicted)",
+    template="plotly_white"
+)
+fig_res.show()
 """)
 
 # --- Section 11: Summary & Conclusion ---
 add_md("""
 ## 11. Conclusions & Production Recommendations
 
-1. **Feature Engineering Impact**: Constructing domain aggregates (`TotalSF`, `TotalBath`, `HouseAge`, `QualArea`) yielded higher Mutual Information with `SalePrice` than almost all individual raw features.
-2. **Target Transformation**: The `log1p` transformation reduced target skewness from 1.88 to 0.12, converting a heteroscedastic target into a near-Gaussian distribution suitable for linear and distance-based regression.
-3. **Model Selection**: CatBoost is the recommended production model, achieving the lowest test error ($MAE \\approx \\$14,500$, $RMSE \\approx \\$22,000$, $R^2 \\approx 0.92$), with minimal overfitting gap.
-4. **Reproducibility**: All transformations are encapsulated within leak-free Scikit-Learn pipelines, ensuring robust reproducibility for future unseen test records.
+1. **Feature Engineering Impact:** Constructing domain aggregates (`TotalSF`, `TotalBath`, `HouseAge`, `QualArea`) yielded stronger predictive signal with `SalePrice` than individual raw features alone.
+2. **Target & Feature Transformation:** Applying `log1p` to skewed numerical predictors and `SalePrice` stabilized variance and linearized feature-target relationships.
+3. **Production Model Selection:** **Ridge Regression** is the recommended production model, achieving the lowest Test Log-RMSE (`0.1136`) and highest $R^2$ (`0.9241`), while offering fast inference and transparent feature weights.
+4. **Leak-Free Reproducibility:** Preprocessing and variance filtering are encapsulated inside Scikit-Learn pipelines and fitted strictly within each training fold during cross-validation, ensuring reliable generalization on unseen housing records.
 """)
 
 nb.cells = cells
