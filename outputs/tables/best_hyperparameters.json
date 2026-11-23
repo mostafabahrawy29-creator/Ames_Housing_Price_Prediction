@@ -1,0 +1,40 @@
+{
+    "Ridge Regression": {
+        "alpha": 8.820230221892343
+    },
+    "KNN Regressor": {
+        "n_neighbors": 5,
+        "weights": "distance",
+        "p": 1
+    },
+    "SVR": {
+        "C": 0.7024418026955039,
+        "epsilon": 0.03832010638919038,
+        "gamma": "auto"
+    },
+    "XGBoost": {
+        "n_estimators": 200,
+        "max_depth": 4,
+        "learning_rate": 0.07725419238894964,
+        "subsample": 0.897737871458254,
+        "colsample_bytree": 0.7821921277541205,
+        "reg_alpha": 0.35625709503846387,
+        "reg_lambda": 0.46997244982413955
+    },
+    "LightGBM": {
+        "n_estimators": 350,
+        "max_depth": 5,
+        "num_leaves": 20,
+        "learning_rate": 0.05180632002712214,
+        "subsample": 0.9307223041547326,
+        "colsample_bytree": 0.8310914541493926,
+        "reg_alpha": 0.33773504702547086,
+        "reg_lambda": 0.3796888599729845
+    },
+    "CatBoost": {
+        "iterations": 400,
+        "depth": 4,
+        "learning_rate": 0.09565252683794644,
+        "l2_leaf_reg": 3.3246635105970013
+    }
+}
